@@ -47,6 +47,7 @@
 #endif
 #include <linux/limits.h>
 
+#define stripe_size 512
 
 static struct {
   char driveA[512];
@@ -57,13 +58,19 @@ static int xmp_getattr(const char *path, struct stat *stbuf)
 {
   char fullpath[PATH_MAX];
 	int res;
+	struct stat temp;
 
-  sprintf(fullpath, "%s%s",
-      rand() % 2 == 0 ? global_context.driveA : global_context.driveB, path);
+	sprintf(fullpath[0], "%s%s", global_context.driveA, path);
+	sprintf(fullpath[1], "%s%s", global_context.driveB, path);
 
-	res = lstat(fullpath, stbuf);
-	if (res == -1)
+	res = lstat(fullpath[0], stbuf);
+	if(res == -1)
 		return -errno;
+	res = lstat(fullpath[1], &temp);
+	if(res == -1)
+		return -errno;
+	
+	stbuf->st_size += temp.st_size;
 
 	return 0;
 }
@@ -372,43 +379,60 @@ static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
 {
   char fullpath[PATH_MAX];
   int fd;
-  int res;
+  int res = 0;
+  int count;
+  int rd_temp = 1;
 
-  sprintf(fullpath, "%s%s",
-      rand() % 2 == 0 ? global_context.driveA : global_context.driveB, path);
+  sprintf(fullpath[0], "%s%s", global_context.driveA, path);
+  sprintf(fullpath[1], "%s%s", global_context.driveB, path);
+
   (void) fi;
-  fd = open(fullpath, O_RDONLY);
+
+  for(count = 0; rd_temp > 0; count++){
+  fd = open(fullpath[count % 2], O_RDONLY);
   if (fd == -1)
     return -errno;
 
-  res = pread(fd, buf, size, offset);
+  rd_temp = pread(fd, buf+res,stripe_size, offset / 2);
   if (res == -1)
     res = -errno;
 
   close(fd);
+  }
   return res;
 }
 
 static int xmp_write(const char *path, const char *buf, size_t size,
     off_t offset, struct fuse_file_info *fi)
 {
-  char fullpaths[2][PATH_MAX];
+  char fullpath[2][PATH_MAX];
   int fd;
-  int res;
+  int res = 0;
+  int rest_size = size;
+  int cur_size;
+  int count;
+  int wr_temp = 1;
 
   (void) fi;
 
-  sprintf(fullpaths[0], "%s%s", global_context.driveA, path);
-  sprintf(fullpaths[1], "%s%s", global_context.driveB, path);
+  sprintf(fullpath[0], "%s%s", global_context.driveA, path);
+  sprintf(fullpath[1], "%s%s", global_context.driveB, path);
 
-  for (int i = 0; i < 2; ++i) {
-    const char* fullpath = fullpaths[i];
+  for (count = 0; wr_temp > 0; count++) {
+    
+	if(rest_size > stripe_size){
+	  cur_size = stripe_size;
+	  rest_size -= stripe_size;
+	}
+	else{
+	  cur_size = rest_size;
+	}
 
-    fd = open(fullpath, O_WRONLY);
+    fd = open(fullpath[count % 2], O_WRONLY);
     if (fd == -1)
       return -errno;
 
-    res = pwrite(fd, buf, size, offset);
+    res = pwrite(fd, buf, cur_size, offset / 2);
     if (res == -1)
       res = -errno;
 
